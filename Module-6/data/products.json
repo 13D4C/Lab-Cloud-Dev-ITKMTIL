@@ -1,0 +1,35 @@
+{
+  "product_item_arr": [
+    {
+      "product_name_str": "apple pie slice",
+      "product_id_str": "a444",
+      "price_in_cents_int": 595,
+      "description_str": "amazing taste",
+      "tag_str_arr": [
+        "pie slice",
+        "on offer"
+      ],
+      "special_int": 1
+    },
+    {
+      "product_name_str": "chocolate cake slice",
+      "product_id_str": "a445",
+      "price_in_cents_int": 595,
+      "description_str": "chocolate heaven",
+      "tag_str_arr": [
+        "cake slice",
+        "on offer"
+      ]
+    },
+    {
+      "product_name_str": "chocolate cake",
+      "product_id_str": "a446",
+      "price_in_cents_int": 4095,
+      "description_str": "chocolate heaven",
+      "tag_str_arr": [
+        "whole cake",
+        "on offer"
+      ]
+    }
+  ]
+}
