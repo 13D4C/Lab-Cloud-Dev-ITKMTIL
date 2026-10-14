@@ -1,0 +1,69 @@
+#!/bin/bash
+set -euo pipefail
+exec > /var/log/user-data.log 2>&1
+umask 077
+
+dnf install -y docker git
+systemctl enable --now docker
+systemctl enable --now amazon-ssm-agent
+usermod -aG docker ec2-user
+
+if ! swapon --show | grep -q /swapfile; then
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+mkdir -p /usr/local/lib/docker/cli-plugins /app
+cd /usr/local/lib/docker/cli-plugins
+curl --fail --location --retry 5 https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 -o docker-compose
+curl --fail --location --retry 5 https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64.sha256 -o docker-compose.sha256
+sed 's/docker-compose-linux-x86_64/docker-compose/g' docker-compose.sha256 | sha256sum --check
+chmod 755 docker-compose
+
+cd /app
+git init
+git remote add origin '${repository}'
+git fetch --depth 1 origin '${revision}'
+git checkout --detach FETCH_HEAD
+base64 -d <<'WORKSHOP_BOOTSTRAP' > backend/internal/database/bootstrap.go
+${bootstrap_source}
+WORKSHOP_BOOTSTRAP
+python3 - <<'PY'
+from pathlib import Path
+p = Path('/app/backend/cmd/main.go')
+source = p.read_text()
+before = '\tdatabase.Migrate()\n\tdatabase.Seed()'
+if source.count(before) != 1:
+    raise RuntimeError('Unexpected database bootstrap in application source.')
+p.write_text(source.replace(before, '\tdatabase.Bootstrap()'))
+PY
+
+cat > /app/.env.prod <<'WORKSHOP_ENV'
+ORIGIN=http://${alb_dns}
+DB_HOST=${db_host}
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=${db_password}
+DB_NAME=itkmitl
+DB_SSLMODE=require
+JWT_SECRET=${jwt_secret}
+CORS_ORIGIN=http://${alb_dns}
+WORKSHOP_ENV
+
+docker compose -f /app/deploy/docker-compose.prod.yml --env-file /app/.env.prod build backend
+docker compose -f /app/deploy/docker-compose.prod.yml --env-file /app/.env.prod build frontend
+docker compose -f /app/deploy/docker-compose.prod.yml --env-file /app/.env.prod up -d --no-build
+for attempt in $(seq 1 120); do
+  if curl --fail --silent http://localhost:8080/api/activities >/dev/null && curl --fail --silent http://localhost:3000/ >/dev/null; then
+    echo Done > /var/log/user-data-done.log
+    TOKEN=$(curl --fail --silent -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)
+    INSTANCE_ID=$(curl --fail --silent -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+    aws autoscaling complete-lifecycle-action --region '${aws_region}' --auto-scaling-group-name workshop-asg --lifecycle-hook-name workshop-bootstrap --lifecycle-action-result CONTINUE --instance-id "$INSTANCE_ID" || true
+    exit 0
+  fi
+  sleep 5
+done
+exit 1
